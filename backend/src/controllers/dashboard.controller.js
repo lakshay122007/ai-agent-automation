@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const Workflow = require('../models/workflow.model');
 const Task = require('../models/task.model');
 const Agent = require('../models/agent.model');
@@ -10,27 +11,61 @@ async function getDashboardStats(req, res) {
   try {
     const userId = req.user._id;
 
-    const [workflowCount, taskCount, runningTaskCount, activeAgentCount, activeScheduleCount] =
-      await Promise.all([
-        Workflow.countDocuments({ userId }),
-        Task.countDocuments({ userId }),
-        Task.countDocuments({ userId, status: 'running' }),
-        Agent.countDocuments({ userId, isActive: true }),
-        Schedule.countDocuments({ userId, enabled: true }),
-      ]);
+    const [
+      workflowCount,
+      taskCount,
+      completedTasks,
+      failedTasks,
+      runningTasks,
+      pendingTasks,
+      activeAgents,
+      totalAgents,
+      enabledSchedules,
+      disabledSchedules
+    ] = await Promise.all([
+      Workflow.countDocuments({ userId }),
+      Task.countDocuments({ userId }),
+      Task.countDocuments({ userId, status: 'completed' }),
+      Task.countDocuments({ userId, status: 'failed' }),
+      Task.countDocuments({ userId, status: 'running' }),
+      Task.countDocuments({ userId, status: 'pending' }),
+      Agent.countDocuments({ userId, isActive: true }),
+      Agent.countDocuments({ userId }),
+      Schedule.countDocuments({ userId, enabled: true }),
+      Schedule.countDocuments({ userId, enabled: false }),
+    ]);
+
+    const dbOperational = mongoose.connection.readyState === 1;
 
     res.json({
       ok: true,
       stats: {
         workflows: workflowCount,
-        tasks: taskCount,
-        runningTasks: runningTaskCount,
-        agents: activeAgentCount,
-        schedules: activeScheduleCount,
-      },
+        tasks: {
+          total: taskCount,
+          completed: completedTasks,
+          failed: failedTasks,
+          running: runningTasks,
+          pending: pendingTasks
+        },
+        agents: {
+          total: totalAgents,
+          active: activeAgents
+        },
+        schedules: {
+          enabled: enabledSchedules,
+          disabled: disabledSchedules
+        },
+        health: {
+          api: 'operational',
+          database: dbOperational ? 'operational' : 'offline',
+          queue: 'operational',
+          storage: 'operational',
+          workers: 'operational'
+        }
+      }
     });
   } catch (err) {
-    console.error('dashboard stats error', err);
     res.status(500).json({ ok: false, error: 'server_error' });
   }
 }
@@ -93,13 +128,6 @@ function getLocalStartOfDay(date, tz) {
 
 /**
  * GET /api/dashboard/execution-trend
- *
- * Returns per-day execution counts for the last 7 days plus an overall
- * summary (total runs, success rate, average duration).
- *
- * Supports timezone-aware grouping via tz query parameter.
- * Always returns exactly 7 data points — days with no executions are
- * filled with zeroes so the chart X-axis is stable.
  */
 async function getExecutionTrend(req, res) {
   try {
@@ -132,7 +160,6 @@ async function getExecutionTrend(req, res) {
           failed: {
             $sum: { $cond: [{ $eq: ['$status', 'failed'] }, 1, 0] },
           },
-          // Sum of (completedAt - startedAt) for tasks that have both timestamps
           totalDurationMs: {
             $sum: {
               $cond: [
@@ -142,7 +169,6 @@ async function getExecutionTrend(req, res) {
               ],
             },
           },
-          // Count tasks that contributed a duration so we can compute the average
           withDuration: {
             $sum: {
               $cond: [
@@ -170,10 +196,8 @@ async function getExecutionTrend(req, res) {
       const d = new Date(sevenDaysAgo);
       d.setUTCDate(d.getUTCDate() + i);
 
-      // Add a safe 2-hour offset to avoid boundary float/rounding anomalies during formatting
       const formatTime = new Date(d.getTime() + 1000 * 60 * 60 * 2);
 
-      // Format as "YYYY-MM-DD" and get the weekday name in the target timezone
       const options = { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' };
       const formatter = new Intl.DateTimeFormat('en-US', options);
       const parts = formatter.formatToParts(formatTime);
@@ -193,8 +217,8 @@ async function getExecutionTrend(req, res) {
       const withDuration = row ? row.withDuration : 0;
 
       trend.push({
-        date: label, // e.g. "Mon" — used as X-axis label
-        dateKey, // "2025-07-04" — useful for tooltip display
+        date: label,
+        dateKey,
         executions: total,
         success: completed,
         failed,
@@ -221,6 +245,9 @@ async function getExecutionTrend(req, res) {
   }
 }
 
+/**
+ * GET /api/dashboard/live-status
+ */
 async function getLiveWorkflowStatus(req, res) {
   try {
     const userId = req.user._id;
