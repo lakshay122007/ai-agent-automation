@@ -61,7 +61,7 @@ async function getDashboardStats(req, res) {
           database: dbOperational ? 'operational' : 'offline',
           queue: 'operational',
           storage: 'operational',
-          workers: 'operational'
+          workers: runningTasks > 0 ? 'operational' : 'unknown'
         }
       }
     });
