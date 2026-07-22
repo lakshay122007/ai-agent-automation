@@ -58,8 +58,8 @@ export function KPIBar({ stats, loading }: KPIBarProps) {
                    kpi.highlighted ? "pl-3" : "pl-6"
                  )}>
                    {kpi.id === "workflows" && (
-                     <span className="text-[11px] font-medium tracking-wider text-muted-foreground/40">
-                       Total active workflows
+                     <span className="text-[11px] font-medium tracking-wider text-emerald-500/90">
+                       +{(stats as any)?.workflowTrend ?? 0} this week
                      </span>
                    )}
                    
@@ -132,7 +132,6 @@ export function KPIBar({ stats, loading }: KPIBarProps) {
                 </div>
               </div>
               
-              {/* The dot separator */}
               {i < kpis.length - 1 && (
                 <div className="flex items-center justify-center shrink-0">
                   <div className="size-[3px] rounded-full bg-border/40" />

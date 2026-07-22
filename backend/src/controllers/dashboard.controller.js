@@ -1,18 +1,18 @@
 const mongoose = require('mongoose');
+const fs = require('fs').promises;
 const Workflow = require('../models/workflow.model');
 const Task = require('../models/task.model');
 const Agent = require('../models/agent.model');
 const Schedule = require('../models/schedule.model');
 
-// -----------------------------
-// GET /api/dashboard/stats
-// -----------------------------
 async function getDashboardStats(req, res) {
   try {
     const userId = req.user._id;
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
     const [
       workflowCount,
+      recentWorkflows,
       taskCount,
       completedTasks,
       failedTasks,
@@ -21,9 +21,11 @@ async function getDashboardStats(req, res) {
       activeAgents,
       totalAgents,
       enabledSchedules,
-      disabledSchedules
+      disabledSchedules,
+      activeWorkers
     ] = await Promise.all([
       Workflow.countDocuments({ userId }),
+      Workflow.countDocuments({ userId, createdAt: { $gte: sevenDaysAgo } }),
       Task.countDocuments({ userId }),
       Task.countDocuments({ userId, status: 'completed' }),
       Task.countDocuments({ userId, status: 'failed' }),
@@ -33,14 +35,31 @@ async function getDashboardStats(req, res) {
       Agent.countDocuments({ userId }),
       Schedule.countDocuments({ userId, enabled: true }),
       Schedule.countDocuments({ userId, enabled: false }),
+      Agent.countDocuments({ userId, isActive: true, updatedAt: { $gte: new Date(Date.now() - 5 * 60000) } })
     ]);
 
-    const dbOperational = mongoose.connection.readyState === 1;
+    const dbStatus = mongoose.connection.readyState === 1 ? 'operational' :
+                     mongoose.connection.readyState === 2 ? 'degraded' : 'offline';
+
+    let storageStatus = 'operational';
+    try {
+      await fs.access(__dirname);
+    } catch (e) {
+      storageStatus = 'offline';
+    }
+
+    let queueStatus = 'operational';
+    try {
+      await Task.findOne().select('_id').lean();
+    } catch (e) {
+      queueStatus = 'offline';
+    }
 
     res.json({
       ok: true,
       stats: {
         workflows: workflowCount,
+        workflowTrend: recentWorkflows,
         tasks: {
           total: taskCount,
           completed: completedTasks,
@@ -58,10 +77,10 @@ async function getDashboardStats(req, res) {
         },
         health: {
           api: 'operational',
-          database: dbOperational ? 'operational' : 'offline',
-          queue: 'operational',
-          storage: 'operational',
-          workers: runningTasks > 0 ? 'operational' : 'unknown'
+          database: dbStatus,
+          queue: queueStatus,
+          storage: storageStatus,
+          workers: activeWorkers > 0 ? 'operational' : 'offline'
         }
       }
     });
@@ -70,10 +89,6 @@ async function getDashboardStats(req, res) {
   }
 }
 
-/**
- * Helper to calculate local midnight of the given date in target timezone,
- * and return it as a UTC Date object.
- */
 function getLocalStartOfDay(date, tz) {
   try {
     const formatter = new Intl.DateTimeFormat('en-US', {
@@ -119,28 +134,22 @@ function getLocalStartOfDay(date, tz) {
     const offsetMs = formattedDateInTZ.getTime() - utcMidnight.getTime();
     return new Date(utcMidnight.getTime() - offsetMs);
   } catch (err) {
-    console.warn(`Timezone formatting failed for ${tz}, falling back to UTC`, err);
     const fallback = new Date(date);
     fallback.setUTCHours(0, 0, 0, 0);
     return fallback;
   }
 }
 
-/**
- * GET /api/dashboard/execution-trend
- */
 async function getExecutionTrend(req, res) {
   try {
     const userId = req.user._id;
     const tz = req.query.tz || 'UTC';
 
-    // ── 1. Build the 7-day date window (target local midnight boundaries) ──
     const now = new Date();
     const localStartToday = getLocalStartOfDay(now, tz);
     const sevenDaysAgo = new Date(localStartToday);
     sevenDaysAgo.setUTCDate(sevenDaysAgo.getUTCDate() - 6);
 
-    // ── 2. Aggregate: group tasks by calendar date in local timezone ──────
     const rows = await Task.aggregate([
       {
         $match: {
@@ -183,13 +192,11 @@ async function getExecutionTrend(req, res) {
       { $sort: { _id: 1 } },
     ]);
 
-    // ── 3. Index DB results by date string for O(1) lookup ─────────────────
     const byDate = {};
     for (const row of rows) {
       byDate[row._id] = row;
     }
 
-    // ── 4. Build a complete 7-point array (fill missing days with zeros) ───
     const trend = [];
 
     for (let i = 0; i < 7; i++) {
@@ -226,7 +233,6 @@ async function getExecutionTrend(req, res) {
       });
     }
 
-    // ── 5. Compute overall summary across all 7 days ───────────────────────
     const totalRuns = trend.reduce((s, d) => s + d.executions, 0);
     const totalCompleted = trend.reduce((s, d) => s + d.success, 0);
     const totalDuration = rows.reduce((s, r) => s + r.totalDurationMs, 0);
@@ -240,14 +246,10 @@ async function getExecutionTrend(req, res) {
 
     res.json({ ok: true, trend, summary });
   } catch (err) {
-    console.error('dashboard execution trend error', err);
     res.status(500).json({ ok: false, error: 'server_error' });
   }
 }
 
-/**
- * GET /api/dashboard/live-status
- */
 async function getLiveWorkflowStatus(req, res) {
   try {
     const userId = req.user._id;
@@ -262,7 +264,6 @@ async function getLiveWorkflowStatus(req, res) {
       failed,
     });
   } catch (err) {
-    console.error('live status error', err);
     res.status(500).json({ ok: false, error: 'server_error' });
   }
 }
