@@ -68,6 +68,7 @@ export type ScheduleStats = {
 
 export type DashboardStats = {
   workflows: number;
+  workflowTrend?: number;
   tasks: TaskStats;
   agents: AgentStats;
   schedules: ScheduleStats;

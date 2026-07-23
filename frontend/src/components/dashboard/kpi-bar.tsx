@@ -59,7 +59,7 @@ export function KPIBar({ stats, loading }: KPIBarProps) {
                  )}>
                    {kpi.id === "workflows" && (
                      <span className="text-[11px] font-medium tracking-wider text-emerald-500/90">
-                       +{(stats as any)?.workflowTrend ?? 0} this week
+                       +{stats?.workflowTrend ?? 0} this week
                      </span>
                    )}
                    
